@@ -37,20 +37,31 @@ def generate_points(frame, num_triangles, prev_gray=None):
         motion_pts = cv2.goodFeaturesToTrack(motion_mask, maxCorners=int(num_points * 0.2), qualityLevel=0.01, minDistance=4)
 
     # 3. Standard and Emboss Feature Allocation
-    feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.5), qualityLevel=0.01, minDistance=4)
-    emboss_pts = cv2.goodFeaturesToTrack(embossed, maxCorners=int(num_points * 0.3), qualityLevel=0.02, minDistance=4)
+    feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.4), qualityLevel=0.01, minDistance=4)
+    emboss_pts = cv2.goodFeaturesToTrack(embossed, maxCorners=int(num_points * 0.2), qualityLevel=0.02, minDistance=4)
+
+    # 4. NEW FEATURE: Center-Biased Allocation (20%)
+    # This adds detail specifically to the middle of the screen
+    center_pts = None
+    center_mask = np.zeros_like(gray)
+    # Define central rectangle (centered, roughly 40% of dimensions)
+    ch, cw = h // 2, w // 2
+    rh, rw = h // 4, w // 4
+    center_mask[ch-rh:ch+rh, cw-rw:cw+rw] = 255
+    center_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.2), qualityLevel=0.005, minDistance=3, mask=center_mask)
 
     points_list = []
     if feat_pts is not None: points_list.append(feat_pts.reshape(-1, 2))
     if emboss_pts is not None: points_list.append(emboss_pts.reshape(-1, 2))
     if motion_pts is not None: points_list.append(motion_pts.reshape(-1, 2))
+    if center_pts is not None: points_list.append(center_pts.reshape(-1, 2))
 
     if len(points_list) > 0:
         points = np.vstack(points_list)
     else:
         points = np.empty((0, 2), dtype=np.float32)
 
-    # 4. Fill remaining points with a fast jittered grid
+    # 5. Fill remaining points with a fast jittered grid
     remaining = num_points - len(points) - 4
     if remaining > 0:
         rows = int(np.sqrt(remaining * (h/w)))
