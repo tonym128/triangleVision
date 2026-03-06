@@ -20,11 +20,14 @@ class TriangleEncoder:
         self.file.write(header)
         
         self.prev_colors = None
+        self.prev_gray = None
 
     def add_frame(self, frame, manual_points=None, manual_colors=None):
         # Resize if necessary
         if frame.shape[1] != self.width or frame.shape[0] != self.height:
             frame = cv2.resize(frame, (self.width, self.height))
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         if manual_points is not None and manual_colors is not None:
             # Use pre-calculated data (quantized to match storage format)
@@ -38,7 +41,7 @@ class TriangleEncoder:
                 complexity = compute_complexity(frame)
                 num_triangles = determine_triangle_count(complexity, self.quality)
 
-            points = generate_points(frame, num_triangles)
+            points = generate_points(frame, num_triangles, self.prev_gray)
             # This internal call will also quantize inside src/triangulate.py
             simplices, colors = get_triangles_and_colors(frame, points, self.prev_colors)
             self.prev_colors = colors
@@ -47,17 +50,17 @@ class TriangleEncoder:
         num_points = len(points)
         num_triangles = len(colors)
 
-        
         pts_data = points.astype(np.uint16).tobytes()
         colors_data = colors.tobytes()
-        
+
         raw_data = struct.pack('<H', num_points) + pts_data + struct.pack('<H', num_triangles) + colors_data
         compressed_data = zlib.compress(raw_data, level=4)
-        
+
         # Write frame header
         frame_header = struct.pack('<cI', b'I', len(compressed_data))
         self.file.write(frame_header)
         self.file.write(compressed_data)
+        self.prev_gray = gray
         
     def close(self):
         self.file.close()

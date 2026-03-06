@@ -16,29 +16,34 @@ def determine_triangle_count(complexity, quality):
     norm = min(complexity / 0.1, 1.0)
     return int(q_min + (q_max - q_min) * norm)
 
-def generate_points(frame, num_triangles):
-    """High-performance point generation with Emboss-based feature detection."""
+def generate_points(frame, num_triangles, prev_gray=None):
+    """High-performance point generation with Emboss and Motion adaptive allocation."""
     num_points = max(int(num_triangles / 2) + 3, 10)
     h, w = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # 1. NEW FEATURE: Emboss-based detail extraction
-    kernel = np.array([[-2, -1, 0],
-                       [-1,  1, 1],
-                       [ 0,  1, 2]])
+    # 1. Feature Map: Emboss
+    kernel = np.array([[-2, -1, 0], [-1, 1, 1], [0, 1, 2]])
     embossed = cv2.filter2D(gray, -1, kernel)
 
-    # 2. Extract anchor points from standard features
-    feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.7), qualityLevel=0.01, minDistance=4)
+    # 2. NEW FEATURE: Motion Vector Allocation (20%)
+    motion_pts = None
+    if prev_gray is not None and prev_gray.shape == gray.shape:
+        # Calculate Farneback Optical Flow (Fast Dense Flow)
+        flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+        # Threshold to find high motion areas
+        motion_mask = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        motion_pts = cv2.goodFeaturesToTrack(motion_mask, maxCorners=int(num_points * 0.2), qualityLevel=0.01, minDistance=4)
 
-    # 3. Extract anchor points from the EMBOSSED detail map
+    # 3. Standard and Emboss Feature Allocation
+    feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.5), qualityLevel=0.01, minDistance=4)
     emboss_pts = cv2.goodFeaturesToTrack(embossed, maxCorners=int(num_points * 0.3), qualityLevel=0.02, minDistance=4)
 
     points_list = []
-    if feat_pts is not None:
-        points_list.append(feat_pts.reshape(-1, 2))
-    if emboss_pts is not None:
-        points_list.append(emboss_pts.reshape(-1, 2))
+    if feat_pts is not None: points_list.append(feat_pts.reshape(-1, 2))
+    if emboss_pts is not None: points_list.append(emboss_pts.reshape(-1, 2))
+    if motion_pts is not None: points_list.append(motion_pts.reshape(-1, 2))
 
     if len(points_list) > 0:
         points = np.vstack(points_list)

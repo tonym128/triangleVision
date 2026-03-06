@@ -34,6 +34,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         encoder = TriangleEncoder(output_path, width, height, fps, target_triangles, quality)
 
     prev_colors = None
+    prev_gray = None
     frame_count = 0
     show_heatmap = False
     
@@ -45,6 +46,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
             break
             
         start_time = time.time()
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         # Every frame is independent now for maximum speed and zero snapping
         if target_triangles is not None:
@@ -53,7 +55,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
             complexity = compute_complexity(frame)
             num_triangles = determine_triangle_count(complexity, quality)
             
-        points = generate_points(frame, num_triangles)
+        points = generate_points(frame, num_triangles, prev_gray)
         simplices, colors = get_triangles_and_colors(frame, points, prev_colors)
         out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap)
         
@@ -97,6 +99,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
                     return
 
         prev_colors = colors
+        prev_gray = gray
         frame_count += 1
         
         key = cv2.waitKey(1) & 0xFF
