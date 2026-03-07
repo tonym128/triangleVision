@@ -123,7 +123,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         
         # Save exact points and colors to file
         if encoder:
-            encoder.add_frame(frame, manual_points=points, manual_colors=colors)
+            encoder.add_frame(frame, manual_points=points, manual_colors=colors, manual_simplices=simplices)
 
         # UI Info and display
         q_size = video_getter.Q.qsize()
@@ -229,16 +229,8 @@ def play_video(input_path, rotoscope=False):
         if frame_data is None:
             break
             
-        frame_type, points, colors, compressed_size = frame_data
+        frame_type, points, colors, simplices, compressed_size = frame_data
         
-        # We need to triangulate on the fly since we didn't save simplices
-        try:
-            tri = Delaunay(points)
-            simplices = tri.simplices
-        except Exception as e:
-            print(f"Triangulation error: {e}")
-            break
-            
         out_frame = draw_triangles((decoder.height, decoder.width), points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=None)
         
         info_text = f"Triangles: {len(colors)} Size: {compressed_size:,}"
@@ -290,15 +282,8 @@ def export_video(input_path, output_path, rotoscope=False):
         if frame_data is None:
             break
             
-        frame_type, points, colors, _ = frame_data
+        frame_type, points, colors, simplices, _ = frame_data
         
-        try:
-            tri = Delaunay(points)
-            simplices = tri.simplices
-        except Exception as e:
-            print(f"Triangulation error at frame {frame_count}: {e}")
-            break
-            
         out_frame = draw_triangles((decoder.height, decoder.width), points, simplices, colors, rotoscope=rotoscope, human_points=None)
         out.write(out_frame)
         

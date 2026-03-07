@@ -23,17 +23,18 @@ class TriangleEncoder:
         self.prev_colors = None
         self.prev_gray = None
 
-    def add_frame(self, frame, manual_points=None, manual_colors=None):
+    def add_frame(self, frame, manual_points=None, manual_colors=None, manual_simplices=None):
         # Resize if necessary
         if frame.shape[1] != self.width or frame.shape[0] != self.height:
             frame = cv2.resize(frame, (self.width, self.height))
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        if manual_points is not None and manual_colors is not None:
-            # Use pre-calculated data (quantized to match storage format)
-            points = np.floor(manual_points).astype(np.float32)
+        if manual_points is not None and manual_colors is not None and manual_simplices is not None:
+            # Use pre-calculated data
+            points = manual_points.astype(np.float32)
             colors = manual_colors
+            simplices = manual_simplices
         else:
             # Standard calculation
             if self.target_triangles is not None:
@@ -43,18 +44,22 @@ class TriangleEncoder:
                 num_triangles = determine_triangle_count(complexity, self.quality)
 
             points, _ = generate_points(frame, num_triangles, self.prev_gray, detect_human=self.detect_human)
-            # This internal call will also quantize inside src/triangulate.py
             simplices, colors = get_triangles_and_colors(frame, points, self.prev_colors)
             self.prev_colors = colors
 
         # Serialize data
         num_points = len(points)
-        num_triangles = len(colors)
+        num_simplices = len(simplices)
 
+        # Quantize points to uint16 for storage
         pts_data = points.astype(np.uint16).tobytes()
+        # Simplices are indices, usually small enough for uint16 if points < 65535
+        simplices_data = simplices.astype(np.uint16).tobytes()
         colors_data = colors.tobytes()
 
-        raw_data = struct.pack('<H', num_points) + pts_data + struct.pack('<H', num_triangles) + colors_data
+        raw_data = struct.pack('<HHH', num_points, num_simplices, len(colors))
+        raw_data += pts_data + simplices_data + colors_data
+        
         compressed_data = zlib.compress(raw_data, level=4)
 
         # Write frame header
@@ -90,24 +95,26 @@ class TriangleDecoder:
         compressed_data = self.file.read(data_len)
         raw_data = zlib.decompress(compressed_data)
         
-        # Parse Raw Data
+        # Parse Raw Data (Updated format: n_pts, n_simplices, n_colors)
         offset = 0
-        num_points = struct.unpack('<H', raw_data[offset:offset+2])[0]
-        offset += 2
+        num_points, num_simplices, num_colors = struct.unpack('<HHH', raw_data[offset:offset+6])
+        offset += 6
         
         pts_size = num_points * 4 # 2 uint16s per point
         pts_data = raw_data[offset:offset+pts_size]
         points = np.frombuffer(pts_data, dtype=np.uint16).reshape(-1, 2).astype(np.float32)
         offset += pts_size
         
-        num_triangles = struct.unpack('<H', raw_data[offset:offset+2])[0]
-        offset += 2
+        simplices_size = num_simplices * 6 # 3 uint16s per simplex
+        simplices_data = raw_data[offset:offset+simplices_size]
+        simplices = np.frombuffer(simplices_data, dtype=np.uint16).reshape(-1, 3).astype(np.int32)
+        offset += simplices_size
         
-        colors_size = num_triangles * 3
+        colors_size = num_colors * 3
         colors_data = raw_data[offset:offset+colors_size]
         colors = np.frombuffer(colors_data, dtype=np.uint8).reshape(-1, 3)
         
-        return frame_type, points, colors, data_len
+        return frame_type, points, colors, simplices, data_len
         
     def close(self):
         self.file.close()

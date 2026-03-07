@@ -35,9 +35,10 @@ def determine_triangle_count(complexity, quality):
     norm = min(complexity / 0.1, 1.0)
     return int(q_min + (q_max - q_min) * norm)
 
-# Pre-initialize classifiers once at module level for speed
 _hog = None
 _face_cascade = None
+_body_cascade = None
+_upper_cascade = None
 
 def get_hog():
     global _hog
@@ -46,17 +47,15 @@ def get_hog():
         _hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
     return _hog
 
-def get_face_cascade():
-    global _face_cascade
-    if _face_cascade is None:
-        import os
-        face_cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
-        if os.path.exists(face_cascade_path):
-            _face_cascade = cv2.CascadeClassifier(face_cascade_path)
-    return _face_cascade
+def get_cascade(name):
+    import os
+    cascade_path = os.path.join(cv2.data.haarcascades, name)
+    if os.path.exists(cascade_path):
+        return cv2.CascadeClassifier(cascade_path)
+    return None
 
 def generate_points(frame, num_triangles, prev_gray=None, detect_human=False):
-    """Optimized point generation with enhanced human/face detection."""
+    """Optimized point generation with multi-cascade human/face/body detection."""
     num_points = max(int(num_triangles / 2) + 3, 10)
     h, w = frame.shape[:2]
     
@@ -69,17 +68,15 @@ def generate_points(frame, num_triangles, prev_gray=None, detect_human=False):
     # 1. Primary Features (Shi-Tomasi)
     feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.4), qualityLevel=0.01, minDistance=int(4 * scale))
     
-    # 2. ENHANCED Human Detection
+    # 2. MULTI-LAYER Human Detection
     human_pts = None
     if detect_human:
         human_mask = np.zeros_like(gray)
         found_anything = False
         
-        # A. Body Detection (HOG)
+        # A. Body Detection (HOG - tuned for speed and sensitivity)
         hog = get_hog()
-        (rects, weights) = hog.detectMultiScale(gray, winStride=(8, 8), padding=(8, 8), scale=1.05)
-        
-        # Ensure rects is a list for groupRectangles even if empty or single
+        (rects, weights) = hog.detectMultiScale(gray, winStride=(4, 4), padding=(4, 4), scale=1.05)
         rects_list = rects.tolist() if isinstance(rects, np.ndarray) else list(rects)
         if len(rects_list) > 0:
             rects_list, _ = cv2.groupRectangles(rects_list, 1, 0.2)
@@ -87,17 +84,25 @@ def generate_points(frame, num_triangles, prev_gray=None, detect_human=False):
                 cv2.rectangle(human_mask, (rx, ry), (rx + rw, ry + rh), 255, -1)
                 found_anything = True
 
-        # B. Face Detection (Haar Cascade)
-        face_cascade = get_face_cascade()
-        if face_cascade:
-            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-            for (fx, fy, fw, fh) in faces:
-                padding = int(fw * 0.2)
-                cv2.rectangle(human_mask, (fx-padding, fy-padding), (fx + fw + padding, fy + fh + padding), 255, -1)
-                found_anything = True
+        # B. Haar Cascades (Face, Upper Body, Full Body)
+        cascades = [
+            ('haarcascade_frontalface_default.xml', 1.1, 5, 0.2), # padding 20%
+            ('haarcascade_upperbody.xml', 1.1, 3, 0.1),         # padding 10%
+            ('haarcascade_fullbody.xml', 1.1, 3, 0.05)           # padding 5%
+        ]
+        
+        for cascade_name, scale_factor, min_neighbors, pad_ratio in cascades:
+            cascade = get_cascade(cascade_name)
+            if cascade:
+                found_rects = cascade.detectMultiScale(gray, scale_factor, min_neighbors)
+                for (fx, fy, fw, fh) in found_rects:
+                    pad = int(fw * pad_ratio)
+                    cv2.rectangle(human_mask, (fx-pad, fy-pad), (fx + fw + pad, fy + fh + pad), 255, -1)
+                    found_anything = True
         
         if found_anything:
-            human_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.25), qualityLevel=0.005, minDistance=int(2 * scale), mask=human_mask)
+            # Allocate 30% of points specifically to human areas (increased for multi-cascade)
+            human_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.30), qualityLevel=0.005, minDistance=int(2 * scale), mask=human_mask)
 
     # 3. Motion (10%)
     motion_pts = None
