@@ -13,7 +13,7 @@ def benchmark():
 
     # Warmup
     print("Warming up...")
-    points, h_pts = generate_points(frame, num_triangles, detect_human=True)
+    points, h_pts, _ = generate_points(frame, num_triangles, detect_human=True)
     simplices, colors = get_triangles_and_colors(frame, points)
     _ = draw_triangles(frame.shape, points, simplices, colors, human_points=h_pts, heatmap=True)
 
@@ -26,10 +26,16 @@ def benchmark():
     # Time generate_points (with human detection)
     start = time.time()
     for _ in range(30):
-        points, h_pts = generate_points(frame, num_triangles, detect_human=True)
+        points, h_pts, _ = generate_points(frame, num_triangles, detect_human=True)
     print(f"generate_points (+human): {(time.time() - start) / 30:.4f}s")
     
-    points, h_pts = generate_points(frame, num_triangles, detect_human=True)
+    # Time generate_points (WITHOUT human detection)
+    start = time.time()
+    for _ in range(30):
+        points, _, _ = generate_points(frame, num_triangles, detect_human=False)
+    print(f"generate_points (-human): {(time.time() - start) / 30:.4f}s")
+    
+    points, h_pts, _ = generate_points(frame, num_triangles, detect_human=True)
 
     # Time get_triangles_and_colors
     start = time.time()
@@ -51,11 +57,23 @@ def benchmark():
         out = draw_triangles(frame.shape, points, simplices, colors, rotoscope=True)
     print(f"draw_triangles (rotoscope): {(time.time() - start) / 30:.4f}s")
     
-    # Time draw_triangles with heatmap
+    # Time draw_triangles (heatmap+human)
     start = time.time()
     for _ in range(30):
         out = draw_triangles(frame.shape, points, simplices, colors, heatmap=True, human_points=h_pts)
     print(f"draw_triangles (heatmap+human): {(time.time() - start) / 30:.4f}s")
+
+    # Time GPURenderer
+    from src.gpu_renderer import GPURenderer
+    try:
+        renderer = GPURenderer(1280, 720)
+        start = time.time()
+        for _ in range(30):
+            out = renderer.render(points, simplices, colors)
+        print(f"GPURenderer: {(time.time() - start) / 30:.4f}s")
+        renderer.close()
+    except Exception as e:
+        print(f"GPURenderer failed: {e}")
 
 if __name__ == "__main__":
     benchmark()

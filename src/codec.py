@@ -43,7 +43,7 @@ class TriangleEncoder:
                 complexity = compute_complexity(frame)
                 num_triangles = determine_triangle_count(complexity, self.quality)
 
-            points, _ = generate_points(frame, num_triangles, self.prev_gray, detect_human=self.detect_human)
+            points, _, _ = generate_points(frame, num_triangles, self.prev_gray, detect_human=self.detect_human)
             simplices, colors = get_triangles_and_colors(frame, points, self.prev_colors)
             self.prev_colors = colors
 

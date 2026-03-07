@@ -97,9 +97,19 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
 
     prev_colors = None
     prev_gray = None
+    prev_human_mask = None
     frame_count = 0
     show_heatmap = False
     
+    # Initialize GPU Renderer if possible
+    renderer = None
+    try:
+        from src.gpu_renderer import GPURenderer
+        renderer = GPURenderer(width, height)
+        print("GPU Acceleration: ENABLED")
+    except Exception as e:
+        print(f"GPU Acceleration: DISABLED ({e})")
+
     cv2.namedWindow('TriangleVision - Realtime', cv2.WINDOW_NORMAL)
 
     while True:
@@ -127,9 +137,22 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
             complexity = compute_complexity(frame)
             num_triangles = determine_triangle_count(complexity, quality)
             
-        points, h_pts = generate_points(frame, num_triangles, prev_gray, detect_human=detect_human)
+        # Throttled human detection (every 3 frames) to maintain 30fps+
+        should_detect = detect_human and (frame_count % 3 == 0)
+        # We pass the previous mask if we're not re-detecting this frame
+        points, h_pts, current_mask = generate_points(frame, num_triangles, prev_gray, detect_human=should_detect, human_mask=prev_human_mask)
+        
+        # Update persistence if we just detected or if we want to keep the mask
+        if current_mask is not None:
+            prev_human_mask = current_mask
+        
         simplices, colors = get_triangles_and_colors(frame, points, prev_colors)
-        out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=h_pts)
+        
+        # Rendering: Use GPU Renderer for standard view, CPU for special modes
+        if renderer and not rotoscope and not show_heatmap:
+            out_frame = renderer.render(points, simplices, colors)
+        else:
+            out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=h_pts)
         
         # Save exact points and colors to file
         if encoder:
@@ -181,6 +204,8 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         encoder.close()
     if video_writer:
         video_writer.release()
+    if renderer:
+        renderer.close()
     video_getter.stop()
     cv2.destroyAllWindows()
 
