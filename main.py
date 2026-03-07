@@ -81,9 +81,19 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
     if fps <= 0: fps = 30 # Fallback for webcams
 
     encoder = None
+    video_writer = None
     if output_path:
-        print(f"Recording to {output_path}...")
-        encoder = TriangleEncoder(output_path, width, height, fps, target_triangles, quality, detect_human=detect_human)
+        if output_path.lower().endswith(('.mp4', '.mkv', '.avi', '.mov')):
+            print(f"Recording to video file: {output_path}...")
+            fourcc = cv2.VideoWriter_fourcc(*'avc1')
+            video_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            if not video_writer.isOpened():
+                print("Warning: H.264 (avc1) not supported. Falling back to mp4v.")
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                video_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        else:
+            print(f"Recording to .triv file: {output_path}...")
+            encoder = TriangleEncoder(output_path, width, height, fps, target_triangles, quality, detect_human=detect_human)
 
     prev_colors = None
     prev_gray = None
@@ -93,9 +103,9 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
     cv2.namedWindow('TriangleVision - Realtime', cv2.WINDOW_NORMAL)
 
     while True:
-        # If recording, we MUST process every frame.
-        # If NOT recording, we can skip ahead to the latest frame if the queue is backing up
-        if not encoder:
+        # If recording (to .triv OR standard video), we MUST process every frame.
+        # If NOT recording, we can skip ahead to the latest frame if the queue is backing up to stay "live"
+        if not encoder and not video_writer:
             # Skip logic to stay "live"
             while video_getter.Q.qsize() > 1:
                 video_getter.read() 
@@ -124,6 +134,8 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         # Save exact points and colors to file
         if encoder:
             encoder.add_frame(frame, manual_points=points, manual_colors=colors, manual_simplices=simplices)
+        if video_writer:
+            video_writer.write(out_frame)
 
         # UI Info and display
         q_size = video_getter.Q.qsize()
@@ -167,6 +179,8 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
 
     if encoder:
         encoder.close()
+    if video_writer:
+        video_writer.release()
     video_getter.stop()
     cv2.destroyAllWindows()
 
