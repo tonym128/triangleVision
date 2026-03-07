@@ -35,8 +35,28 @@ def determine_triangle_count(complexity, quality):
     norm = min(complexity / 0.1, 1.0)
     return int(q_min + (q_max - q_min) * norm)
 
-def generate_points(frame, num_triangles, prev_gray=None):
-    """Optimized point generation using a single pass and downscaled sampling."""
+# Pre-initialize classifiers once at module level for speed
+_hog = None
+_face_cascade = None
+
+def get_hog():
+    global _hog
+    if _hog is None:
+        _hog = cv2.HOGDescriptor()
+        _hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+    return _hog
+
+def get_face_cascade():
+    global _face_cascade
+    if _face_cascade is None:
+        import os
+        face_cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
+        if os.path.exists(face_cascade_path):
+            _face_cascade = cv2.CascadeClassifier(face_cascade_path)
+    return _face_cascade
+
+def generate_points(frame, num_triangles, prev_gray=None, detect_human=False):
+    """Optimized point generation with enhanced human/face detection."""
     num_points = max(int(num_triangles / 2) + 3, 10)
     h, w = frame.shape[:2]
     
@@ -47,26 +67,56 @@ def generate_points(frame, num_triangles, prev_gray=None):
     gray = cv2.resize(gray_full, (sw, sh))
 
     # 1. Primary Features (Shi-Tomasi)
-    feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.5), qualityLevel=0.01, minDistance=int(4 * scale))
+    feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.4), qualityLevel=0.01, minDistance=int(4 * scale))
     
-    # 2. Motion (20%) - Optional/Fast
+    # 2. ENHANCED Human Detection
+    human_pts = None
+    if detect_human:
+        human_mask = np.zeros_like(gray)
+        found_anything = False
+        
+        # A. Body Detection (HOG)
+        hog = get_hog()
+        (rects, weights) = hog.detectMultiScale(gray, winStride=(8, 8), padding=(8, 8), scale=1.05)
+        
+        # Ensure rects is a list for groupRectangles even if empty or single
+        rects_list = rects.tolist() if isinstance(rects, np.ndarray) else list(rects)
+        if len(rects_list) > 0:
+            rects_list, _ = cv2.groupRectangles(rects_list, 1, 0.2)
+            for (rx, ry, rw, rh) in rects_list:
+                cv2.rectangle(human_mask, (rx, ry), (rx + rw, ry + rh), 255, -1)
+                found_anything = True
+
+        # B. Face Detection (Haar Cascade)
+        face_cascade = get_face_cascade()
+        if face_cascade:
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            for (fx, fy, fw, fh) in faces:
+                padding = int(fw * 0.2)
+                cv2.rectangle(human_mask, (fx-padding, fy-padding), (fx + fw + padding, fy + fh + padding), 255, -1)
+                found_anything = True
+        
+        if found_anything:
+            human_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.25), qualityLevel=0.005, minDistance=int(2 * scale), mask=human_mask)
+
+    # 3. Motion (10%)
     motion_pts = None
     if prev_gray is not None and prev_gray.shape == gray_full.shape:
-        # Downscale previous gray too or just use the current scale
         prev_gray_scaled = cv2.resize(prev_gray, (sw, sh))
         diff = cv2.absdiff(prev_gray_scaled, gray)
         _, motion_mask = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-        motion_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.2), qualityLevel=0.01, minDistance=int(4 * scale), mask=motion_mask)
+        motion_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.1), qualityLevel=0.01, minDistance=int(4 * scale), mask=motion_mask)
 
-    # 3. Center biased (10%)
+    # 4. Center biased (5%) - Reduced to make room for human/face
     center_mask = np.zeros_like(gray)
     ch, cw = sh // 2, sw // 2
     rh, rw = sh // 4, sw // 4
     center_mask[ch-rh:ch+rh, cw-rw:cw+rw] = 255
-    center_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.1), qualityLevel=0.01, minDistance=int(4 * scale), mask=center_mask)
+    center_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.05), qualityLevel=0.01, minDistance=int(4 * scale), mask=center_mask)
 
     points_list = []
     if feat_pts is not None: points_list.append(feat_pts.reshape(-1, 2) / scale)
+    if human_pts is not None: points_list.append(human_pts.reshape(-1, 2) / scale)
     if motion_pts is not None: points_list.append(motion_pts.reshape(-1, 2) / scale)
     if center_pts is not None: points_list.append(center_pts.reshape(-1, 2) / scale)
 
@@ -75,7 +125,7 @@ def generate_points(frame, num_triangles, prev_gray=None):
     else:
         points = np.empty((0, 2), dtype=np.float32)
 
-    # 4. Fill remaining points with a fast jittered grid
+    # 5. Fill remaining points with a fast jittered grid
     remaining = num_points - len(points) - 4
     if remaining > 0:
         rows = int(np.sqrt(remaining * (h/w)))
@@ -89,7 +139,9 @@ def generate_points(frame, num_triangles, prev_gray=None):
     corners = np.array([[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]], dtype=np.float32)
     points = np.clip(points, 0, [w-1, h-1])
     points = np.vstack([points, corners])
-    return points.astype(np.float32)
+    
+    # Return all points and specific human points for visualization
+    return points.astype(np.float32), (human_pts / scale if human_pts is not None else None)
 
 def get_triangles_and_colors(frame, points, prev_colors=None, smoothing=0.3):
     """Vectorized color sampling with optimized NumPy indexing."""
@@ -130,7 +182,7 @@ def draw_heatmap(frame_shape, points):
     color_heatmap = cv2.resize(color_heatmap, (w, h), interpolation=cv2.INTER_LINEAR)
     return color_heatmap
 
-def draw_triangles(frame_shape, points, simplices, colors, rotoscope=False, heatmap=False):
+def draw_triangles(frame_shape, points, simplices, colors, rotoscope=False, heatmap=False, human_points=None):
     """Optimized rendering using fillConvexPoly and fewer Python overheads."""
     h, w = frame_shape[:2]
     out_frame = np.zeros((h, w, 3), dtype=np.uint8)
@@ -152,4 +204,11 @@ def draw_triangles(frame_shape, points, simplices, colors, rotoscope=False, heat
     if heatmap:
         h_map = draw_heatmap(frame_shape, points)
         cv2.addWeighted(h_map, 0.4, out_frame, 0.6, 0, out_frame)
+        
+        # ADD GREEN DOTS for human detection points
+        if human_points is not None:
+            # Reshape from (N, 1, 2) to (N, 2) to avoid indexing errors
+            for pt in human_points.reshape(-1, 2).astype(np.int32):
+                cv2.circle(out_frame, (int(pt[0]), int(pt[1])), 3, (0, 255, 0), -1, lineType=cv2.LINE_AA)
+                
     return out_frame

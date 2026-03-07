@@ -54,7 +54,7 @@ class ThreadedVideoGetter:
         time.sleep(0.1) # Give thread time to finish
         self.stream.release()
 
-def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=False, output_path=None):
+def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=False, output_path=None, detect_human=False):
     # Try to convert source to int if it's a digit (for webcam IDs)
     try:
         source_input = int(source)
@@ -83,7 +83,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
     encoder = None
     if output_path:
         print(f"Recording to {output_path}...")
-        encoder = TriangleEncoder(output_path, width, height, fps, target_triangles, quality)
+        encoder = TriangleEncoder(output_path, width, height, fps, target_triangles, quality, detect_human=detect_human)
 
     prev_colors = None
     prev_gray = None
@@ -117,9 +117,9 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
             complexity = compute_complexity(frame)
             num_triangles = determine_triangle_count(complexity, quality)
             
-        points = generate_points(frame, num_triangles, prev_gray)
+        points, h_pts = generate_points(frame, num_triangles, prev_gray, detect_human=detect_human)
         simplices, colors = get_triangles_and_colors(frame, points, prev_colors)
-        out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap)
+        out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=h_pts)
         
         # Save exact points and colors to file
         if encoder:
@@ -146,7 +146,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
                     break
                 if key == ord('p'):
                     show_heatmap = not show_heatmap
-                    out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap)
+                    out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=h_pts)
                     cv2.putText(out_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                     cv2.imshow('TriangleVision - Realtime', out_frame)
                 if key == ord('q'):
@@ -171,7 +171,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
     cv2.destroyAllWindows()
 
 
-def encode_video(input_path, output_path, target_triangles=None, quality='medium'):
+def encode_video(input_path, output_path, target_triangles=None, quality='medium', detect_human=False):
     print(f"Encoding {input_path} to {output_path}...")
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -190,7 +190,7 @@ def encode_video(input_path, output_path, target_triangles=None, quality='medium
         width = int(width * scale)
         height = int(height * scale)
     
-    encoder = TriangleEncoder(output_path, width, height, fps, target_triangles, quality)
+    encoder = TriangleEncoder(output_path, width, height, fps, target_triangles, quality, detect_human=detect_human)
     
     frame_count = 0
     while True:
@@ -239,7 +239,7 @@ def play_video(input_path, rotoscope=False):
             print(f"Triangulation error: {e}")
             break
             
-        out_frame = draw_triangles((decoder.height, decoder.width), points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap)
+        out_frame = draw_triangles((decoder.height, decoder.width), points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=None)
         
         info_text = f"Triangles: {len(colors)} Size: {compressed_size:,}"
         cv2.putText(out_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
@@ -299,7 +299,7 @@ def export_video(input_path, output_path, rotoscope=False):
             print(f"Triangulation error at frame {frame_count}: {e}")
             break
             
-        out_frame = draw_triangles((decoder.height, decoder.width), points, simplices, colors, rotoscope=rotoscope)
+        out_frame = draw_triangles((decoder.height, decoder.width), points, simplices, colors, rotoscope=rotoscope, human_points=None)
         out.write(out_frame)
         
         frame_count += 1
@@ -320,6 +320,7 @@ if __name__ == '__main__':
     parser_rt.add_argument("--triangles", type=int, default=None, help="Target number of triangles (overrides quality)")
     parser_rt.add_argument("--quality", choices=["low", "medium", "high"], default="medium", help="Adaptive quality level")
     parser_rt.add_argument("--rotoscope", action="store_true", help="Enable rotoscoping mode (ink edges and cell shading)")
+    parser_rt.add_argument("--human", action="store_true", help="Enable human detection and enhance detail on people")
     parser_rt.add_argument("--output", type=str, default=None, help="Optionally save the realtime stream to a .triv file")
     
     # Encode Command
@@ -328,6 +329,7 @@ if __name__ == '__main__':
     parser_enc.add_argument("output", help="Output .triv file path")
     parser_enc.add_argument("--triangles", type=int, default=None, help="Target number of triangles (overrides quality)")
     parser_enc.add_argument("--quality", choices=["low", "medium", "high"], default="medium", help="Adaptive quality level")
+    parser_enc.add_argument("--human", action="store_true", help="Enable human detection and enhance detail on people")
     
     # Play Command
     parser_play = subparsers.add_parser("play", help="Play a .triv format video")
@@ -343,9 +345,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     if args.command == "realtime":
-        realtime_mode(args.source, args.triangles, args.quality, args.rotoscope, output_path=args.output)
+        realtime_mode(args.source, args.triangles, args.quality, args.rotoscope, output_path=args.output, detect_human=args.human)
     elif args.command == "encode":
-        encode_video(args.input, args.output, args.triangles, args.quality)
+        encode_video(args.input, args.output, args.triangles, args.quality, detect_human=args.human)
     elif args.command == "play":
         play_video(args.input, args.rotoscope)
     elif args.command == "export":

@@ -5,13 +5,14 @@ import numpy as np
 from src.triangulate import generate_points, get_triangles_and_colors, determine_triangle_count, compute_complexity
 
 class TriangleEncoder:
-    def __init__(self, output_path, width, height, fps, target_triangles=None, quality='medium'):
+    def __init__(self, output_path, width, height, fps, target_triangles=None, quality='medium', detect_human=False):
         self.output_path = output_path
         self.width = width
         self.height = height
         self.fps = int(fps)
         self.target_triangles = target_triangles
         self.quality = quality
+        self.detect_human = detect_human
         
         self.file = open(self.output_path, 'wb')
         
@@ -41,7 +42,7 @@ class TriangleEncoder:
                 complexity = compute_complexity(frame)
                 num_triangles = determine_triangle_count(complexity, self.quality)
 
-            points = generate_points(frame, num_triangles, self.prev_gray)
+            points, _ = generate_points(frame, num_triangles, self.prev_gray, detect_human=self.detect_human)
             # This internal call will also quantize inside src/triangulate.py
             simplices, colors = get_triangles_and_colors(frame, points, self.prev_colors)
             self.prev_colors = colors
