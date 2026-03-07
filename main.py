@@ -8,6 +8,51 @@ from src.triangulate import get_triangles_and_colors, draw_triangles, generate_p
 from src.codec import TriangleEncoder, TriangleDecoder
 import os
 import sys
+import threading
+from queue import Queue
+
+class ThreadedVideoGetter:
+    """
+    Class that continuously gets frames from a VideoCapture object
+    with a dedicated thread and stores them in a queue.
+    """
+    def __init__(self, src=0, queue_size=128):
+        self.stream = cv2.VideoCapture(src)
+        self.stopped = False
+        self.Q = Queue(maxsize=queue_size)
+
+    def start(self):    
+        t = threading.Thread(target=self.get, args=())
+        t.daemon = True
+        t.start()
+        return self
+
+    def get(self):
+        while not self.stopped:
+            if not self.Q.full():
+                (grabbed, frame) = self.stream.read()
+                if not grabbed:
+                    self.stop()
+                    return
+                self.Q.put(frame)
+            else:
+                # If queue is full, wait a bit to avoid CPU pegging
+                time.sleep(0.001)
+
+    def read(self):
+        # Returns (True, frame) if available, (False, None) otherwise
+        if not self.Q.empty():
+            return True, self.Q.get()
+        return False, None
+
+    def more(self):
+        # Check if there are frames left in the queue
+        return self.Q.qsize() > 0
+
+    def stop(self):
+        self.stopped = True
+        time.sleep(0.1) # Give thread time to finish
+        self.stream.release()
 
 def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=False, output_path=None):
     # Try to convert source to int if it's a digit (for webcam IDs)
@@ -17,15 +62,22 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         source_input = source
 
     print(f"Starting processing on source: {source_input}...")
-    cap = cv2.VideoCapture(source_input)
-    if not cap.isOpened():
+    
+    # Increase queue size to handle potential lag spikes
+    video_getter = ThreadedVideoGetter(source_input, queue_size=128).start()
+    
+    # Wait for the first frame to determine video properties
+    while not video_getter.more() and not video_getter.stopped:
+        time.sleep(0.01)
+
+    if video_getter.stopped:
         print(f"Error: Could not open source {source_input}")
         return
 
-    # Get video properties for encoder if needed
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    # Get properties from the stream before processing
+    width = int(video_getter.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(video_getter.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = video_getter.stream.get(cv2.CAP_PROP_FPS)
     if fps <= 0: fps = 30 # Fallback for webcams
 
     encoder = None
@@ -41,14 +93,24 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
     cv2.namedWindow('TriangleVision - Realtime', cv2.WINDOW_NORMAL)
 
     while True:
-        ret, frame = cap.read()
+        # If recording, we MUST process every frame.
+        # If NOT recording, we can skip ahead to the latest frame if the queue is backing up
+        if not encoder:
+            # Skip logic to stay "live"
+            while video_getter.Q.qsize() > 1:
+                video_getter.read() 
+                
+        ret, frame = video_getter.read()
         if not ret:
-            break
+            if video_getter.stopped:
+                break
+            time.sleep(0.001)
+            continue
             
         start_time = time.time()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Every frame is independent now for maximum speed and zero snapping
+        # Every frame is independent for maximum speed and zero snapping
         if target_triangles is not None:
             num_triangles = target_triangles
         else:
@@ -63,21 +125,16 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         if encoder:
             encoder.add_frame(frame, manual_points=points, manual_colors=colors)
 
-        # Calculate Mock Byte Size for the frame for display
-        num_points = len(points)
-        num_triangles = len(colors)
-        pts_data = points.astype(np.uint16).tobytes()
-        colors_data = colors.tobytes()
-        raw_data = struct.pack('<H', num_points) + pts_data + struct.pack('<H', num_triangles) + colors_data
-        compressed_size = len(zlib.compress(raw_data, level=4))
-
+        # UI Info and display
+        q_size = video_getter.Q.qsize()
         fps_val = 1.0 / (time.time() - start_time)
-        info_text = f"FPS: {fps_val:.1f} Triangles: {len(colors)} Size: {compressed_size:,}"
+        info_text = f"FPS: {fps_val:.1f} Triangles: {len(colors)} Q:{q_size}"
         if encoder:
             info_text += " [RECORDING]"
+        if q_size > 100:
+            info_text += " [LAGGING]"
             
         cv2.putText(out_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        
         cv2.imshow('TriangleVision - Realtime', out_frame)
         
         # Pause on the first frame and wait for user input
@@ -94,7 +151,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
                     cv2.imshow('TriangleVision - Realtime', out_frame)
                 if key == ord('q'):
                     if encoder: encoder.close()
-                    cap.release()
+                    video_getter.stop()
                     cv2.destroyAllWindows()
                     return
 
@@ -110,7 +167,7 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
 
     if encoder:
         encoder.close()
-    cap.release()
+    video_getter.stop()
     cv2.destroyAllWindows()
 
 

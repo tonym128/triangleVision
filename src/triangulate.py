@@ -1,11 +1,30 @@
 import cv2
 import numpy as np
 from scipy.spatial import Delaunay
+from numba import njit, prange
+
+@njit(parallel=True)
+def sample_colors_numba(processed_frame, centroids, h, w):
+    num_triangles = centroids.shape[0]
+    colors = np.empty((num_triangles, 3), dtype=np.uint8)
+    for i in prange(num_triangles):
+        cx = centroids[i, 0]
+        cy = centroids[i, 1]
+        if cx < 0: cx = 0
+        if cx >= w: cx = w - 1
+        if cy < 0: cy = 0
+        if cy >= h: cy = h - 1
+        colors[i, 0] = processed_frame[cy, cx, 0]
+        colors[i, 1] = processed_frame[cy, cx, 1]
+        colors[i, 2] = processed_frame[cy, cx, 2]
+    return colors
 
 def compute_complexity(frame):
     """Fast edge-based complexity."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 100, 200)
+    # Using a smaller scale for complexity check to speed up
+    small_gray = cv2.resize(gray, (0,0), fx=0.5, fy=0.5)
+    edges = cv2.Canny(small_gray, 100, 200)
     return np.mean(edges > 0)
 
 def determine_triangle_count(complexity, quality):
@@ -17,56 +36,50 @@ def determine_triangle_count(complexity, quality):
     return int(q_min + (q_max - q_min) * norm)
 
 def generate_points(frame, num_triangles, prev_gray=None):
-    """High-performance point generation with Emboss and Motion adaptive allocation."""
+    """Optimized point generation using a single pass and downscaled sampling."""
     num_points = max(int(num_triangles / 2) + 3, 10)
     h, w = frame.shape[:2]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # DOWN-SCALE for feature detection (huge speedup)
+    scale = 0.5
+    sh, sw = int(h * scale), int(w * scale)
+    gray_full = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray_full, (sw, sh))
 
-    # 1. Feature Map: Emboss
-    kernel = np.array([[-2, -1, 0], [-1, 1, 1], [0, 1, 2]])
-    embossed = cv2.filter2D(gray, -1, kernel)
-
-    # 2. NEW FEATURE: Motion Vector Allocation (20%)
+    # 1. Primary Features (Shi-Tomasi)
+    feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.5), qualityLevel=0.01, minDistance=int(4 * scale))
+    
+    # 2. Motion (20%) - Optional/Fast
     motion_pts = None
-    if prev_gray is not None and prev_gray.shape == gray.shape:
-        # Calculate Farneback Optical Flow (Fast Dense Flow)
-        flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-        # Threshold to find high motion areas
-        motion_mask = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        motion_pts = cv2.goodFeaturesToTrack(motion_mask, maxCorners=int(num_points * 0.2), qualityLevel=0.01, minDistance=4)
+    if prev_gray is not None and prev_gray.shape == gray_full.shape:
+        # Downscale previous gray too or just use the current scale
+        prev_gray_scaled = cv2.resize(prev_gray, (sw, sh))
+        diff = cv2.absdiff(prev_gray_scaled, gray)
+        _, motion_mask = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+        motion_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.2), qualityLevel=0.01, minDistance=int(4 * scale), mask=motion_mask)
 
-    # 3. Standard and Emboss Feature Allocation
-    feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.4), qualityLevel=0.01, minDistance=4)
-    emboss_pts = cv2.goodFeaturesToTrack(embossed, maxCorners=int(num_points * 0.2), qualityLevel=0.02, minDistance=4)
-
-    # 4. NEW FEATURE: Center-Biased Allocation (20%)
-    # This adds detail specifically to the middle of the screen
-    center_pts = None
+    # 3. Center biased (10%)
     center_mask = np.zeros_like(gray)
-    # Define central rectangle (centered, roughly 40% of dimensions)
-    ch, cw = h // 2, w // 2
-    rh, rw = h // 4, w // 4
+    ch, cw = sh // 2, sw // 2
+    rh, rw = sh // 4, sw // 4
     center_mask[ch-rh:ch+rh, cw-rw:cw+rw] = 255
-    center_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.2), qualityLevel=0.005, minDistance=3, mask=center_mask)
+    center_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.1), qualityLevel=0.01, minDistance=int(4 * scale), mask=center_mask)
 
     points_list = []
-    if feat_pts is not None: points_list.append(feat_pts.reshape(-1, 2))
-    if emboss_pts is not None: points_list.append(emboss_pts.reshape(-1, 2))
-    if motion_pts is not None: points_list.append(motion_pts.reshape(-1, 2))
-    if center_pts is not None: points_list.append(center_pts.reshape(-1, 2))
+    if feat_pts is not None: points_list.append(feat_pts.reshape(-1, 2) / scale)
+    if motion_pts is not None: points_list.append(motion_pts.reshape(-1, 2) / scale)
+    if center_pts is not None: points_list.append(center_pts.reshape(-1, 2) / scale)
 
     if len(points_list) > 0:
         points = np.vstack(points_list)
     else:
         points = np.empty((0, 2), dtype=np.float32)
 
-    # 5. Fill remaining points with a fast jittered grid
+    # 4. Fill remaining points with a fast jittered grid
     remaining = num_points - len(points) - 4
     if remaining > 0:
         rows = int(np.sqrt(remaining * (h/w)))
         cols = int(remaining / rows) if rows > 0 else 1
-        
         yy, xx = np.mgrid[0:h:complex(0, rows), 0:w:complex(0, cols)]
         grid_points = np.vstack([xx.ravel(), yy.ravel()]).T
         grid_points += np.random.uniform(-5, 5, grid_points.shape)
@@ -79,19 +92,26 @@ def generate_points(frame, num_triangles, prev_gray=None):
     return points.astype(np.float32)
 
 def get_triangles_and_colors(frame, points, prev_colors=None, smoothing=0.3):
-    """Vectorized color sampling with parity quantization."""
+    """Vectorized color sampling with optimized NumPy indexing."""
     h, w = frame.shape[:2]
-    points = np.floor(points).astype(np.float32)
+    # Fast blur and quantization
     processed = cv2.GaussianBlur(frame, (3, 3), 0)
-    processed = (processed >> 4) << 4
+    processed &= 0xF0 
+    
     tri = Delaunay(points)
     simplices = tri.simplices
     triangle_pts = points[simplices]
     centroids = np.mean(triangle_pts, axis=1).astype(np.int32)
-    centroids[:, 0] = np.clip(centroids[:, 0], 0, w - 1)
-    centroids[:, 1] = np.clip(centroids[:, 1], 0, h - 1)
-    colors = processed[centroids[:, 1], centroids[:, 0]]
+    
+    # Clip centroids to ensure they are within bounds
+    cx = np.clip(centroids[:, 0], 0, w - 1)
+    cy = np.clip(centroids[:, 1], 0, h - 1)
+    
+    # Fast NumPy indexing
+    colors = processed[cy, cx]
+    
     if prev_colors is not None and len(prev_colors) == len(colors):
+        # Vectorized smoothing
         colors = (colors.astype(np.float32) * smoothing + 
                   prev_colors.astype(np.float32) * (1.0 - smoothing)).astype(np.uint8)
     return simplices, colors
@@ -111,15 +131,24 @@ def draw_heatmap(frame_shape, points):
     return color_heatmap
 
 def draw_triangles(frame_shape, points, simplices, colors, rotoscope=False, heatmap=False):
-    """Optimized rendering with optional heatmap overlay."""
+    """Optimized rendering using fillConvexPoly and fewer Python overheads."""
     h, w = frame_shape[:2]
     out_frame = np.zeros((h, w, 3), dtype=np.uint8)
+    
+    # Pre-convert points to int32 once
+    pts_int = points.astype(np.int32)
+    
+    # Use fillConvexPoly which is generally faster than fillPoly for single triangles
+    # and disable anti-aliasing for maximum speed
     for i in range(len(simplices)):
-        pts = points[simplices[i]].astype(np.int32)
-        cv2.fillPoly(out_frame, [pts], colors[i].tolist(), lineType=cv2.LINE_AA)
+        pts = pts_int[simplices[i]]
+        cv2.fillConvexPoly(out_frame, pts, colors[i].tolist())
+        
     if rotoscope:
-        all_pts = points[simplices].astype(np.int32)
-        cv2.polylines(out_frame, all_pts, isClosed=True, color=(15, 15, 15), thickness=1, lineType=cv2.LINE_AA)
+        all_pts = pts_int[simplices]
+        # polylines can take a list of contours
+        cv2.polylines(out_frame, all_pts, isClosed=True, color=(15, 15, 15), thickness=1)
+        
     if heatmap:
         h_map = draw_heatmap(frame_shape, points)
         cv2.addWeighted(h_map, 0.4, out_frame, 0.6, 0, out_frame)
