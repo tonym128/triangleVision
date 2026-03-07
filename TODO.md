@@ -18,7 +18,7 @@ This document tracks planned improvements, optimizations, and new features for t
 - [ ] **Temporal Mesh Smoothing**: Implement point-to-point tracking between frames to reduce "mesh popping" and flickering in static areas.
 - [ ] **Advanced Shading**: Add support for Gouraud or Phong shading within the triangles to create smoother gradients or 3D-like lighting effects.
 - [ ] **Texture Mapping**: Support mapping the original video texture onto the triangles with adjustable transparency for a "stained glass" effect.
-- [ ] **AI-Powered Saliency**: Replace Haar Cascades with a more modern, lightweight saliency detector (like Saliency-DS) for better point distribution on interesting objects.
+- [x] **AI-Powered Saliency**: Replaced Haar Cascades with OpenCV's Spectral Residual Saliency for broader, faster point distribution on interesting objects.
 
 ## 📦 File Format & Speed (.triv v2)
 - [ ] **Delta Encoding**: Only store the movement (vectors) of points between frames to drastically reduce the file size of the `.triv` format.

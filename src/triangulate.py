@@ -35,27 +35,20 @@ def determine_triangle_count(complexity, quality):
     norm = min(complexity / 0.1, 1.0)
     return int(q_min + (q_max - q_min) * norm)
 
-_hog = None
-_face_cascade = None
-_body_cascade = None
-_upper_cascade = None
+_saliency = None
 
-def get_hog():
-    global _hog
-    if _hog is None:
-        _hog = cv2.HOGDescriptor()
-        _hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-    return _hog
-
-def get_cascade(name):
-    import os
-    cascade_path = os.path.join(cv2.data.haarcascades, name)
-    if os.path.exists(cascade_path):
-        return cv2.CascadeClassifier(cascade_path)
-    return None
+def get_saliency_detector():
+    global _saliency
+    if _saliency is None:
+        try:
+            _saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
+        except AttributeError:
+            # Fallback if opencv-contrib is not installed
+            _saliency = False
+    return _saliency
 
 def generate_points(frame, num_triangles, prev_gray=None, detect_human=False, human_mask=None):
-    """Optimized point generation with multi-cascade human/face/body detection."""
+    """Optimized point generation with AI-powered saliency detection."""
     num_points = max(int(num_triangles / 2) + 3, 10)
     h, w = frame.shape[:2]
     
@@ -66,44 +59,28 @@ def generate_points(frame, num_triangles, prev_gray=None, detect_human=False, hu
     gray_full = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray_full, (sw, sh))
 
-    # 2. Primary Features (Shi-Tomasi)
+    # 2. Primary Features (Shi-Tomasi) - Base 40%
     feat_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.4), qualityLevel=0.01, minDistance=int(4 * scale))
     
-    # 3. MULTI-LAYER Human Detection
+    # 3. AI-Powered Saliency (30%)
+    # Using 'detect_human' flag as a trigger for saliency for backward compatibility
     human_pts = None
     if detect_human or human_mask is not None:
         if human_mask is None:
-            human_mask = np.zeros_like(gray)
-            found_anything = False
+            detector = get_saliency_detector()
+            if detector:
+                # Spectral Residual saliency is extremely fast
+                success, sal_map = detector.computeSaliency(frame)
+                if success:
+                    # Convert [0,1] float to [0,255] uint8 and resize to detection scale
+                    sal_map = (sal_map * 255).astype(np.uint8)
+                    human_mask = cv2.resize(sal_map, (sw, sh))
+                    
+                    # Optional: Threshold to focus only on most salient regions
+                    _, human_mask = cv2.threshold(human_mask, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
             
-            # A. Body Detection (HOG - tuned for speed)
-            hog = get_hog()
-            (rects, weights) = hog.detectMultiScale(gray, winStride=(8, 8), padding=(4, 4), scale=1.05)
-            rects_list = rects.tolist() if isinstance(rects, np.ndarray) else list(rects)
-            if len(rects_list) > 0:
-                rects_list, _ = cv2.groupRectangles(rects_list, 1, 0.2)
-                for (rx, ry, rw, rh) in rects_list:
-                    cv2.rectangle(human_mask, (rx, ry), (rx + rw, ry + rh), 255, -1)
-                    found_anything = True
-
-            # B. Haar Cascades
-            cascades = [
-                ('haarcascade_frontalface_default.xml', 1.1, 5, 0.2), 
-                ('haarcascade_fullbody.xml', 1.1, 3, 0.05)
-            ]
-            
-            for cascade_name, scale_factor, min_neighbors, pad_ratio in cascades:
-                cascade = get_cascade(cascade_name)
-                if cascade:
-                    found_rects = cascade.detectMultiScale(gray, scale_factor, min_neighbors)
-                    for (fx, fy, fw, fh) in found_rects:
-                        pad = int(fw * pad_ratio)
-                        cv2.rectangle(human_mask, (fx-pad, fy-pad), (fx + fw + pad, fy + fh + pad), 255, -1)
-                        found_anything = True
-        
-        # If we have a mask (either just created or passed in), sample points from it
+        # Sample points from the saliency mask
         if human_mask is not None and np.any(human_mask > 0):
-            # Allocate 30% of points specifically to human areas
             human_pts = cv2.goodFeaturesToTrack(gray, maxCorners=int(num_points * 0.30), qualityLevel=0.005, minDistance=int(2 * scale), mask=human_mask)
 
     # 4. Motion (10%)
