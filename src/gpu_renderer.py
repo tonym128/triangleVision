@@ -49,40 +49,36 @@ class GPURenderer:
         if clear:
             self.ctx.clear(0, 0, 0, 1) # Black background
         
-        # simplices are indices into points. We need to create a flat vertex array for moderngl
-        # A more efficient way is using an Element Buffer (IBO)
-        
-        # Flattened Vertices and Colors for each vertex of each triangle
-        # OpenGL expects 3 vertices per triangle if we don't use IBO
-        # To make it fastest, we'll use an Index Buffer
-        
-        # 1. Create Vertex Buffer (Points)
-        vbo_pts = self.ctx.buffer(points.astype('f4').tobytes())
-        # 2. Create Index Buffer (Simplices)
-        ibo = self.ctx.buffer(simplices.astype('u4').tobytes())
-        # 3. Create Color Buffer (Repeat each color 3 times? No, colors are per-triangle)
-        # In standard OpenGL, colors are per-vertex. To get flat shading per triangle,
-        # we need to duplicate vertices or use a special shader technique.
-        # Fastest way: Duplicate points for each triangle to have per-triangle colors.
-        
-        # Let's use the "duplicate points" method for simplicity in this prototype
-        # since simplices are relatively small (< 10k)
+        # To make it fastest and handle per-triangle colors, we duplicate vertices
         tri_pts = points[simplices].astype('f4') # (N, 3, 2)
+        # colors are BGR from OpenCV. We pass them as-is.
         tri_colors = np.repeat(colors[:, np.newaxis, :], 3, axis=1).astype('f4') # (N, 3, 3)
         
-        # Pack into interleaved buffer: [x, y, r, g, b, x, y, r, g, b, ...]
-        v_data = np.dstack([tri_pts, tri_colors]).astype('f4').tobytes()
+        # Pack into interleaved buffer: [x, y, b, g, r] per vertex
+        v_data = np.concatenate([tri_pts, tri_colors], axis=2).astype('f4').tobytes()
         vbo = self.ctx.buffer(v_data)
         
         vao = self.ctx.simple_vertex_array(self.prog, vbo, 'in_vert', 'in_color')
         vao.render(moderngl.TRIANGLES)
         
-        # Read back pixels
+        # Ensure all rendering commands are finished before reading back
+        self.ctx.finish()
+        
+        # Read back pixels. ModernGL reads are bottom-up.
         raw = self.fbo.read(components=3, dtype='u1')
         img = np.frombuffer(raw, dtype='u1').reshape((self.height, self.width, 3))
         
-        # BGR for OpenCV
-        return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        # Flip vertically to match OpenCV coordinate system (top-down)
+        # We use .copy() because flipud returns a view, which might be read-only
+        img = np.flipud(img).copy()
+        
+        # Cleanup GPU resources to prevent memory leaks
+        vbo.release()
+        vao.release()
+        
+        # Since we passed BGR to the shader and read back the same bytes,
+        # 'img' is already in BGR format for OpenCV. No conversion needed.
+        return img
 
     def close(self):
         self.ctx.release()

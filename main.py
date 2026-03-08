@@ -18,6 +18,11 @@ class ThreadedVideoGetter:
     """
     def __init__(self, src=0, queue_size=128):
         self.stream = cv2.VideoCapture(src)
+        
+        # Enable auto-orientation for video files
+        if hasattr(cv2, 'CAP_PROP_ORIENTATION_AUTO'):
+            self.stream.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1.0)
+            
         self.stopped = False
         self.Q = Queue(maxsize=queue_size)
 
@@ -74,9 +79,20 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         print(f"Error: Could not open source {source_input}")
         return
 
-    # Get properties from the stream before processing
+    # Get properties from the stream, but verify with the first frame
+    ret, first_frame = video_getter.read()
+    if not ret:
+        print("Error: Could not read first frame.")
+        return
+        
+    fh, fw = first_frame.shape[:2]
     width = int(video_getter.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(video_getter.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # If properties are 0 or mismatch the frame (often due to orientation), use frame shape
+    if width != fw or height != fh or width <= 0:
+        width, height = fw, fh
+        
     fps = video_getter.stream.get(cv2.CAP_PROP_FPS)
     if fps <= 0: fps = 30 # Fallback for webcams
 
@@ -111,21 +127,24 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         print(f"GPU Acceleration: DISABLED ({e})")
 
     cv2.namedWindow('TriangleVision - Realtime', cv2.WINDOW_NORMAL)
-
+    
+    # Start processing with the first frame
+    frame = first_frame
     while True:
-        # If recording (to .triv OR standard video), we MUST process every frame.
-        # If NOT recording, we can skip ahead to the latest frame if the queue is backing up to stay "live"
-        if not encoder and not video_writer:
-            # Skip logic to stay "live"
-            while video_getter.Q.qsize() > 1:
-                video_getter.read() 
-                
-        ret, frame = video_getter.read()
-        if not ret:
-            if video_getter.stopped:
-                break
-            time.sleep(0.001)
-            continue
+        if frame is None:
+            # If recording (to .triv OR standard video), we MUST process every frame.
+            # If NOT recording, we can skip ahead to the latest frame if the queue is backing up to stay "live"
+            if not encoder and not video_writer:
+                # Skip logic to stay "live"
+                while video_getter.Q.qsize() > 1:
+                    video_getter.read() 
+                    
+            ret, frame = video_getter.read()
+            if not ret:
+                if video_getter.stopped:
+                    break
+                time.sleep(0.001)
+                continue
             
         start_time = time.time()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -148,18 +167,6 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         
         simplices, colors = get_triangles_and_colors(frame, points, prev_colors)
         
-        # Rendering: Use GPU Renderer for standard view, CPU for special modes
-        if renderer and not rotoscope and not show_heatmap:
-            out_frame = renderer.render(points, simplices, colors)
-        else:
-            out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=h_pts)
-        
-        # Save exact points and colors to file
-        if encoder:
-            encoder.add_frame(frame, manual_points=points, manual_colors=colors, manual_simplices=simplices)
-        if video_writer:
-            video_writer.write(out_frame)
-
         # UI Info and display
         q_size = video_getter.Q.qsize()
         fps_val = 1.0 / (time.time() - start_time)
@@ -169,30 +176,25 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
         if q_size > 100:
             info_text += " [LAGGING]"
             
+        # Rendering: Use GPU Renderer for standard view, CPU for special modes
+        if renderer and not rotoscope and not show_heatmap:
+            out_frame = renderer.render(points, simplices, colors)
+        else:
+            out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=h_pts)
+        
         cv2.putText(out_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         cv2.imshow('TriangleVision - Realtime', out_frame)
         
-        # Pause on the first frame and wait for user input
-        if frame_count == 0:
-            print("First frame rendered. Press SPACE to start playback, P for heatmap, or 'q' to quit.")
-            while True:
-                key = cv2.waitKey(0) & 0xFF
-                if key == ord(' '):
-                    break
-                if key == ord('p'):
-                    show_heatmap = not show_heatmap
-                    out_frame = draw_triangles(frame.shape, points, simplices, colors, rotoscope=rotoscope, heatmap=show_heatmap, human_points=h_pts)
-                    cv2.putText(out_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                    cv2.imshow('TriangleVision - Realtime', out_frame)
-                if key == ord('q'):
-                    if encoder: encoder.close()
-                    video_getter.stop()
-                    cv2.destroyAllWindows()
-                    return
-
+        # Save exact points and colors to file (DO THIS AFTER DISPLAY TO AVOID LAG)
+        if encoder:
+            encoder.add_frame(frame, manual_points=points, manual_colors=colors, manual_simplices=simplices)
+        if video_writer:
+            video_writer.write(out_frame)
+        
         prev_colors = colors
         prev_gray = gray
         frame_count += 1
+        frame = None # Set to None so the next iteration reads from the queue
         
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -213,34 +215,57 @@ def realtime_mode(source=0, target_triangles=None, quality='medium', rotoscope=F
 def encode_video(input_path, output_path, target_triangles=None, quality='medium', detect_human=False):
     print(f"Encoding {input_path} to {output_path}...")
     cap = cv2.VideoCapture(input_path)
+    
+    # Enable auto-orientation for video files
+    if hasattr(cv2, 'CAP_PROP_ORIENTATION_AUTO'):
+        cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1.0)
+        
     if not cap.isOpened():
         print(f"Error: Could not open {input_path}")
         return
-        
+
+    # Read first frame to verify dimensions
+    ret, first_frame = cap.read()
+    if not ret:
+        print("Error: Could not read first frame.")
+        cap.release()
+        return
+
+    fh, fw = first_frame.shape[:2]
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # If properties are 0 or mismatch the frame (often due to orientation), use frame shape
+    if width != fw or height != fh or width <= 0:
+        width, height = fw, fh
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
+
     # Optional scaling down for very large videos
     max_dim = 1280
     if width > max_dim or height > max_dim:
         scale = max_dim / max(width, height)
         width = int(width * scale)
         height = int(height * scale)
-    
+
     encoder = TriangleEncoder(output_path, width, height, fps, target_triangles, quality, detect_human=detect_human)
-    
+
     frame_count = 0
+    # Process the first frame
+    encoder.add_frame(first_frame)
+    frame_count += 1
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-            
+
         encoder.add_frame(frame)
         frame_count += 1
         sys.stdout.write(f"\rProcessed {frame_count}/{total_frames} frames")
         sys.stdout.flush()
+
         
     print("\nEncoding complete!")
     encoder.close()
