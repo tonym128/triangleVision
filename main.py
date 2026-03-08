@@ -271,6 +271,46 @@ def encode_video(input_path, output_path, target_triangles=None, quality='medium
     encoder.close()
     cap.release()
 
+def encode_image(input_path, output_path, target_triangles=None, quality='medium', detect_human=False):
+    print(f"Processing image {input_path}...")
+    img = cv2.imread(input_path)
+    if img is None:
+        print(f"Error: Could not read image {input_path}")
+        return
+        
+    h, w = img.shape[:2]
+    
+    # Optional scaling for massive images
+    max_dim = 2048
+    if w > max_dim or h > max_dim:
+        scale = max_dim / max(w, h)
+        w = int(w * scale)
+        h = int(h * scale)
+        img = cv2.resize(img, (w, h))
+
+    if output_path.lower().endswith('.triv'):
+        print(f"Encoding to {output_path}...")
+        # 1 FPS for static images
+        encoder = TriangleEncoder(output_path, w, h, 1, target_triangles, quality, detect_human=detect_human)
+        encoder.add_frame(img)
+        encoder.close()
+    else:
+        # Save as stylized image (JPG/PNG/etc)
+        print(f"Saving stylized image to {output_path}...")
+        if target_triangles is not None:
+            num_triangles = target_triangles
+        else:
+            complexity = compute_complexity(img)
+            num_triangles = determine_triangle_count(complexity, quality)
+            
+        points, _, _ = generate_points(img, num_triangles, detect_human=detect_human)
+        simplices, colors = get_triangles_and_colors(img, points)
+        
+        out_frame = draw_triangles(img.shape, points, simplices, colors)
+        cv2.imwrite(output_path, out_frame)
+    
+    print("Done!")
+
 def play_video(input_path, rotoscope=False):
     from scipy.spatial import Delaunay
     
@@ -284,13 +324,22 @@ def play_video(input_path, rotoscope=False):
     cv2.namedWindow('TriangleVision - Player', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('TriangleVision - Player', decoder.width, decoder.height)
     
-    delay = int(1000 / decoder.fps)
+    # Use 1 FPS if decoder says 0 to avoid division by zero
+    fps = decoder.fps if decoder.fps > 0 else 1
+    delay = int(1000 / fps)
     show_heatmap = False
     
     while True:
         start_time = time.time()
         frame_data = decoder.read_frame()
         if frame_data is None:
+            # For static images or end of video, wait for 'q'
+            print("End of stream. Press 'q' to exit.")
+            while True:
+                if cv2.waitKey(100) & 0xFF == ord('q'):
+                    break
+                if cv2.getWindowProperty('TriangleVision - Player', cv2.WND_PROP_VISIBLE) < 1:
+                    break
             break
             
         frame_type, points, colors, simplices, compressed_size = frame_data
@@ -380,6 +429,14 @@ if __name__ == '__main__':
     parser_enc.add_argument("--quality", choices=["low", "medium", "high"], default="medium", help="Adaptive quality level")
     parser_enc.add_argument("--human", action="store_true", help="Enable human detection and enhance detail on people")
     
+    # Image Command
+    parser_img = subparsers.add_parser("image", help="Convert an image to .triv or stylized image")
+    parser_img.add_argument("input", help="Input image path")
+    parser_img.add_argument("output", help="Output path (.triv or .jpg/.png)")
+    parser_img.add_argument("--triangles", type=int, default=None, help="Target number of triangles")
+    parser_img.add_argument("--quality", choices=["low", "medium", "high"], default="medium", help="Quality level")
+    parser_img.add_argument("--human", action="store_true", help="Enable human detection/saliency")
+
     # Play Command
     parser_play = subparsers.add_parser("play", help="Play a .triv format video")
     parser_play.add_argument("input", help="Input .triv file path")
@@ -397,6 +454,8 @@ if __name__ == '__main__':
         realtime_mode(args.source, args.triangles, args.quality, args.rotoscope, output_path=args.output, detect_human=args.human)
     elif args.command == "encode":
         encode_video(args.input, args.output, args.triangles, args.quality, detect_human=args.human)
+    elif args.command == "image":
+        encode_image(args.input, args.output, args.triangles, args.quality, detect_human=args.human)
     elif args.command == "play":
         play_video(args.input, args.rotoscope)
     elif args.command == "export":
