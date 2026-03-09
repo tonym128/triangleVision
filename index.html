@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TriangleVision | Stylized Real-time Video Triangulation</title>
+    <script src="https://unpkg.com/fflate@0.8.2/lib/browser.js"></script>
+    <script src="triv-player.js"></script>
+    <style>
+        :root {
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent: #0ea5e9;
+            --success: #10b981;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        /* Hero Section */
+        header {
+            padding: 6rem 0 4rem;
+            text-align: center;
+            background: radial-gradient(circle at top right, rgba(14, 165, 233, 0.15), transparent),
+                        radial-gradient(circle at top left, rgba(79, 70, 229, 0.15), transparent);
+        }
+
+        h1 {
+            font-size: 4rem;
+            font-weight: 800;
+            letter-spacing: -0.025em;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, #fff 30%, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .tagline {
+            font-size: 1.25rem;
+            color: var(--text-muted);
+            max-width: 700px;
+            margin: 0 auto 2.5rem;
+        }
+
+        /* Demo Section */
+        .demo-container {
+            background: var(--card-bg);
+            border-radius: 1.5rem;
+            padding: 1.5rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            margin-bottom: 4rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        #video-canvas {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 0.75rem;
+            background: #000;
+            aspect-ratio: 16/9;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            margin-top: 1.5rem;
+            padding: 0 0.5rem;
+        }
+
+        button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        button:hover {
+            background: var(--primary-hover);
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        .btn-github {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: #24292f;
+            color: white;
+            text-decoration: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .btn-github:hover {
+            background: #1b1f23;
+        }
+
+        .seek-bar {
+            flex-grow: 1;
+            height: 6px;
+            background: #334155;
+            border-radius: 3px;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .seek-progress {
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            background: var(--accent);
+            border-radius: 3px;
+            width: 0%;
+        }
+
+        /* Features Grid */
+        .section-title {
+            text-align: center;
+            font-size: 2.25rem;
+            margin-bottom: 3rem;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-bottom: 5rem;
+        }
+
+        .feature-card {
+            background: var(--card-bg);
+            padding: 2rem;
+            border-radius: 1rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: transform 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+            display: inline-block;
+        }
+
+        .feature-card h3 {
+            margin-bottom: 0.75rem;
+            color: var(--accent);
+        }
+
+        .feature-card p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        /* Optimizations */
+        .optimizations {
+            background: linear-gradient(180deg, transparent, rgba(79, 70, 229, 0.05));
+            padding: 5rem 0;
+            border-radius: 2rem;
+            margin-bottom: 5rem;
+        }
+
+        .tech-list {
+            list-style: none;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .tech-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 1rem;
+            border-radius: 0.75rem;
+        }
+
+        .tech-item span {
+            color: var(--success);
+            font-weight: bold;
+        }
+
+        footer {
+            text-align: center;
+            padding: 4rem 0;
+            color: var(--text-muted);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        code {
+            background: #000;
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.25rem;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.9em;
+            color: #e2e8f0;
+        }
+
+        @media (max-width: 768px) {
+            h1 { font-size: 2.5rem; }
+            .tagline { font-size: 1.1rem; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="container">
+            <h1>TriangleVision</h1>
+            <p class="tagline">A high-performance video processing tool that converts standard video into a stylized mesh of triangles in real-time.</p>
+            <div style="display: flex; justify-content: center; gap: 1rem; margin-top: 1rem;">
+                <a href="https://github.com/tonym128/triangleVision" class="btn-github">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    View on GitHub
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Demo -->
+        <section class="demo-container">
+            <canvas id="video-canvas"></canvas>
+            <div class="controls">
+                <button id="play-pause-btn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path id="play-icon" d="M8 5v14l11-7z" />
+                        <path id="pause-icon" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" style="display:none" />
+                    </svg>
+                    <span>Play Demo</span>
+                </button>
+                <div class="seek-bar" id="seek-bar">
+                    <div class="seek-progress" id="seek-progress"></div>
+                </div>
+                <div id="frame-info" style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted); min-width: 80px; text-align: right;">
+                    0 / 0
+                </div>
+            </div>
+        </section>
+
+        <!-- Features -->
+        <h2 class="section-title">Core Features</h2>
+        <div class="features-grid">
+            <div class="feature-card">
+                <span class="feature-icon">📐</span>
+                <h3>Delaunay Triangulation</h3>
+                <p>Advanced geometric algorithms create a high-fidelity mesh that preserves the structural integrity of your video.</p>
+            </div>
+            <div class="feature-card">
+                <span class="feature-icon">⚡</span>
+                <h3>Real-time Processing</h3>
+                <p>Optimized for 30FPS+ at 720p resolution using GPU-accelerated rendering and threaded capture.</p>
+            </div>
+            <div class="feature-card">
+                <span class="feature-icon">👁️</span>
+                <h3>Intelligent Sampling</h3>
+                <p>Adaptive point sampling based on edge density, human detection (HOG/Haar), and motion tracking.</p>
+            </div>
+            <div class="feature-card">
+                <span class="feature-icon">📦</span>
+                <h3>Custom .triv Codec</h3>
+                <p>A highly efficient binary format designed specifically for triangle geometry and color data.</p>
+            </div>
+            <div class="feature-card">
+                <span class="feature-icon">🎨</span>
+                <h3>Artistic Styles</h3>
+                <p>Switch between standard triangles, rotoscope mode (ink edges + cell shading), and heatmap visualizations.</p>
+            </div>
+            <div class="feature-card">
+                <span class="feature-icon">🎥</span>
+                <h3>Full Pipeline</h3>
+                <p>Tools for live webcam playback, batch encoding from standard formats, and high-quality MP4 exports.</p>
+            </div>
+        </div>
+
+        <!-- Optimizations -->
+        <div class="optimizations">
+            <div class="container">
+                <h2 class="section-title">Engineered for Performance</h2>
+                <div class="tech-list">
+                    <div class="tech-item"><span>✓</span> ModernGL (GPU)</div>
+                    <div class="tech-item"><span>✓</span> Numba (JIT)</div>
+                    <div class="tech-item"><span>✓</span> NumPy Vectorization</div>
+                    <div class="tech-item"><span>✓</span> Throttled Detection</div>
+                    <div class="tech-item"><span>✓</span> Threaded IO</div>
+                    <div class="tech-item"><span>✓</span> SciPy Spatial</div>
+                </div>
+                <p style="margin-top: 2rem; color: var(--text-muted); text-align: center;">
+                    By leveraging native libraries and GPU acceleration, TriangleVision minimizes CPU overhead while maximizing triangle throughput.
+                </p>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>TriangleVision Engine &copy; 2026 | <a href="https://github.com/tonym128/triangleVision" style="color: var(--accent); text-decoration: none;">GitHub</a></p>
+            <p style="font-size: 0.8rem; margin-top: 0.5rem;">Built with Python, ModernGL, and OpenCV</p>
+        </div>
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            const canvas = document.getElementById('video-canvas');
+            const playBtn = document.getElementById('play-pause-btn');
+            const playIcon = document.getElementById('play-icon');
+            const pauseIcon = document.getElementById('pause-icon');
+            const seekBar = document.getElementById('seek-bar');
+            const seekProgress = document.getElementById('seek-progress');
+            const frameInfo = document.getElementById('frame-info');
+            
+            const player = new TrivPlayer(canvas, {
+                loop: true,
+                onLoad: (header) => {
+                    console.log('Video Loaded:', header);
+                    frameInfo.innerText = `0 / ${player.frameOffsets.length}`;
+                },
+                onFrame: (index, total) => {
+                    const percent = (index / (total - 1)) * 100;
+                    seekProgress.style.width = `${percent}%`;
+                    frameInfo.innerText = `${index + 1} / ${total}`;
+                }
+            });
+
+            try {
+                // Try to load example.triv if it exists in current or samples directory
+                await player.load('samples/example.triv');
+            } catch (e) {
+                console.warn('Could not load samples/example.triv, trying root...');
+                try {
+                    await player.load('example.triv');
+                } catch (e2) {
+                    console.error('No example.triv found for demo.');
+                }
+            }
+
+            playBtn.addEventListener('click', () => {
+                if (player.isPlaying) {
+                    player.pause();
+                    playIcon.style.display = 'block';
+                    pauseIcon.style.display = 'none';
+                    playBtn.querySelector('span').innerText = 'Play Demo';
+                } else {
+                    player.play();
+                    playIcon.style.display = 'none';
+                    pauseIcon.style.display = 'block';
+                    playBtn.querySelector('span').innerText = 'Pause';
+                }
+            });
+
+            seekBar.addEventListener('click', (e) => {
+                const rect = seekBar.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const percent = x / rect.width;
+                player.seek(percent);
+            });
+        });
+    </script>
+</body>
+</html>
